@@ -1,0 +1,100 @@
+# Deployment & Domain Controller Promotion
+
+## Lab Environment
+- **Host:** VirtualBox 7.x
+- **Server OS:** Windows Server 2025 Standard (Desktop Experience)
+- **VM specs:** 4 GB RAM, 2 vCPU, 60 GB disk (dynamic), EFI enabled
+- **Network:** VirtualBox Internal Network (`LAB-NET`)
+- **Domain:** `lab.local` (NetBIOS: `LAB`)
+
+---
+
+## Phase 1: Base Server Configuration
+
+Renamed the server and assigned a static IP before promoting it to a domain controller.
+
+| Setting | Value |
+|---|---|
+| Hostname | `DC01` |
+| IP address | `192.168.10.10` |
+| Subnet mask | `255.255.255.0` (/24) |
+| Default gateway | none (isolated lab network) |
+| Preferred DNS | `127.0.0.1` (loopback — server is its own DNS) |
+
+**Why a static IP:** A domain controller must have a fixed address. Clients
+locate the DC by its IP, and Active Directory + DNS break if that address
+changes. DNS points to loopback because once promoted, DC01 *is* the DNS
+server for the domain.
+
+![Static IP configuration](screenshots/01-ipv4-config.png)
+![Rename to DC01](screenshots/02-rename.png)
+
+Verified with `hostname` and `ipconfig`, then took a snapshot (`pre-ADDS`)
+as a rollback point.
+
+---
+
+## Phase 2 — Active Directory Domain Services Promotion
+
+### Role installation
+Installed the **Active Directory Domain Services** and **DNS Server** roles
+via Server Manager → Add Roles and Features.
+
+![AD DS role selected](screenshots/01-adds-role.png)
+![AD DS installed](screenshots/02-adds-installed.png)
+
+### Promotion
+Promoted DC01 to a domain controller in a **new forest**.
+
+| Setting | Value |
+|---|---|
+| Deployment | New forest |
+| Root domain | `lab.local` |
+| Functional level | Windows Server 2025 |
+| DNS server | Enabled |
+| DSRM password | Set (recovery use) |
+
+![New forest](screenshots/04-new-forest.png)
+![DC options](screenshots/05-dc-options.png)
+![Prerequisites passed](screenshots/07-prereq.png)
+
+The server rebooted automatically and came back showing `LAB\Administrator`
+at login confirmating the domain was live.
+
+![Domain controller dashboard](screenshots/post-ADDS.png)
+
+---
+
+## Verification
+
+Confirmed the domain controller was healthy three independent ways:
+
+**1. DNS resolution**
+
+nslookup -> 192.168.10.10
+(A reverse lookup timeout on '::1' appeared first, which was expected since no reverse zone is configured. The forward lookup succeeded, which is the test that matters for this lab.)
+
+**2. AD domain query**
+
+Get-ADDomain -> DNSRoot: lab.local | NetBIOS: LAB | Mode : Windows2025Domain
+
+**3. Domain controller diagnostics**
+
+cddiag -> all functional tests passed
+(Connectivity, Advertising, Services, Replications, RidManager, NetLogons)
+
+---
+
+##Troubleshooting Note: dcdiag SystemLog & DSFREvent Failures
+
+Initial 'dcdiag'reported two failed tests: **SystemLog** and **DFSREvent**.
+
+**Diagnosis:**
+
+-**SystemLog** flagged "unexpected shutdown events. Root cause: forced VM power-offs during early setup (mouse/display troubleshooting), which the DC logged as unclean shutdowns. Also included a transient KDC/SAM initialization error normal on freshly promoted DC.
+
+-**DSFREvent** flagged SYSVOL replication events. Root cause: normal first-time SYSVOL initialization on a brand-new single domain controller (no replication partner exists yet).
+
+**Resolution:** Performed a clean reboot from inside Windows and re-ran diagnostics. All functional tests passed. The flagged events were historical log entries that age out of the 24-hour scan window. Confirmed benign.
+
+**Lesson:** Always shut down the VM from inside the OS (Start -> Power) or via ACPI Shutdown, never VirtualBox's power-off/reset, which a domain controller records as a crash.
