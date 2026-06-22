@@ -26,8 +26,8 @@ locate the DC by its IP, and Active Directory + DNS break if that address
 changes. DNS points to loopback because once promoted, DC01 *is* the DNS
 server for the domain.
 
-![Static IP configuration](screenshots/01-ipv4-config.png)
-![Rename to DC01](screenshots/02-rename.png)
+![Static IP configuration](screenshots/p1-01-ipv4-config.png)
+![Rename to DC01](screenshots/p1-02-rename.png)
 
 Verified with `hostname` and `ipconfig`, then took a snapshot (`pre-ADDS`)
 as a rollback point.
@@ -40,8 +40,8 @@ as a rollback point.
 Installed the **Active Directory Domain Services** and **DNS Server** roles
 via Server Manager → Add Roles and Features.
 
-![AD DS role selected](screenshots/01-adds-role.png)
-![AD DS installed](screenshots/02-adds-installed.png)
+![AD DS role selected](screenshots/p2-01-adds-role.png)
+![AD DS installed](screenshots/p2-02-adds-installed.png)
 
 ### Promotion
 Promoted DC01 to a domain controller in a **new forest**.
@@ -54,14 +54,14 @@ Promoted DC01 to a domain controller in a **new forest**.
 | DNS server | Enabled |
 | DSRM password | Set (recovery use) |
 
-![New forest](screenshots/04-new-forest.png)
-![DC options](screenshots/05-dc-options.png)
-![Prerequisites passed](screenshots/07-prereq.png)
+![New forest](screenshots/p2-04-new-forest.png)
+![DC options](screenshots/p2-05-dc-options.png)
+![Prerequisites passed](screenshots/p2-07-prereq.png)
 
 The server rebooted automatically and came back showing `LAB\Administrator`
 at login confirming the domain was live.
 
-![Domain controller dashboard](screenshots/post-ADDS.png)
+![Domain controller dashboard](screenshots/p2-post-ADDS.png)
 
 ---
 
@@ -99,7 +99,7 @@ Initial 'dcdiag' reported two failed tests: **SystemLog** and **DFS-REvent**.
 
 **Lesson:** Always shut down the VM from inside the OS (Start -> Power) or via ACPI Shutdown, never VirtualBox's power-off/reset, which a domain controller records as a crash.
 
-## Phase 2: DHCP Server
+## Phase 3: DHCP Server
 
 Installed and configured DHCP so client VMs receive IP addresses, DNS, and domain settings automatically on boot, matching how a real network operates.
 
@@ -115,7 +115,7 @@ A DHCP server must be authorized in AD before it can lease addresses. This preve
 
 The command returned an "RPC server is unavailable" warning, but the line above it cofnirmed successful authorization. 'Get-DhcpServerInDC' verified DC01 was registered. The RPC Warning was a transient post-authorization check, not a failure.
 
-![DHCP authorized in AD](screenshots/02-dhcp-authorize.png)
+![DHCP authorized in AD](screenshots/p3-02-dhcp-authorize.png)
 
 ### Security Groups
 Created the DHCP Administrators / Users groups the service expects, then restarted the servie:
@@ -150,7 +150,7 @@ Configured the options clients receive alongside their IP:
 
 **Why Option 6 matters:** Pointing clients to DC01 for DNS is what allows them to locate the domain and complete domain join and login. Without it, clients get an address but can't find the domain.
 
-![DHCP scope and options verified](screenshots/03-dhcp-scope.png)
+![DHCP scope and options verified](screenshots/p3-03-dhcp-scope.png)
 
 ### Verification
 'Get-DhcpServerv4Scope' confirmed the LAB-Clients scope was Active with the correct range; 'Get-DhcpServerv4OptionValue' confirmed all four options were set.
