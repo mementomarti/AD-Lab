@@ -262,7 +262,7 @@ Created a first user ('John Smith' / 'jsmith') through Activer Directory Users a
 
     New-ADUser -Name "Jane Doe" -SamAccountName "jdoe" '
         -UserPrincipalName "jdoe@lab.local" '
-        =Path "OU-Users,OU=LAB,DC=lab,DC=local" '
+        -Path "OU-Users,OU=LAB,DC=lab,DC=local" '
         -AccountPassword (ConvertTo-SecureString "LabPassword2026!" -AsPlainText -Force) '
         -Enabled $true
 
