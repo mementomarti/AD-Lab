@@ -369,3 +369,69 @@ The central concept of this phase: for a user to access a resource, a full chain
 Group membership must be assigned explicitly.
 
 **Access = membership in a group that has been granted permission on the resource.** Both halves are required; neither works alone.
+
+# Phase 6: Group Policy
+
+Implemented centralized congifuration management via Group Policy Objects (GPOs): a domain-level password policy and an OU-scoped user restriction, both validated on the client.
+
+## Concept
+A GPO is a bundle of settings attached to a contrainer that pushes those settings down tot he users or computers inside it, centralizing control without touching individual machines. **GPOs linky only to Sites, Domains, or OUs; never to groups.**
+
+Two key distinctions:
+- **OUs vs Groups: ** OUs are the target for Group Policy: groups are for resource permissions. Separate systems. A user is typically in both.
+- **Computer vs User Configuration:** every GPO splits into Computer Configuration (applies to the machine, any user) and User Configuration (applies to the user, any machine). Which half takes effect depends on what kind of object sits in the linked OU.
+
+## GPO 1: Password Policy (Domain-Level)
+
+Set a minimum password length of **12 characters** via the **Default Domain Policy**, linked at the domain rooit.
+
+Path: 'Computer Configuration -> Policies -> Windows Settings -> Security Settings -> Account Policies -> Password Policy -> Minimum password length'
+
+**Design note: the password policy quirk:** In Active Directory, the password policy governing domain user accounts comes **only from a policy linked at the domain level** (the Default Domain Policy). A password policy linked to an OU is silently ignored for domain accounts. This is a well-known AD exception. An OU-linked password GPO was created first, found not to enforce, adn the policy was correctly moved to the domain level.
+
+**Length over complexity:** 12 was chosen per current NIST guidance. Length resists brute force better than complexity because each added character multiplies the total number of possible combinations by the entire character set. Length grows the search space exponentially, while complexity only enlarges the per-character set. However, too long of a password circuments users to reuse or write passwords. So, 12 balances strength and usability.
+
+**Enforcement tested both ways:**
+
+    # Rejected - 7 chars, under the 12 minimum:
+    Set-ADAccountPassword -Identity jdoe -MewPassword (ConvertTo-SecureString "Short1!" -AsPlainText -Force)
+    -> "The password does not meet the length, complexity, or history requirement of the domain."
+
+    # Accepted - 15 chars, compliant:
+    Set-ADAccountPassword -Identity jdoe -Reset -NewPassword (ConvertTo-SecureString "LongPassword12!" -AsPlaintText -Force)
+    -> success
+
+![Password Policy enforcement](screenshots/p6-01-password-rejected.png)
+
+## GPO 2: User Desktop Policy (OU-Level)
+
+Created a GPO named **User Desktop Policy**, linked to the **users** OU, to demonstrate OU-scoped policy taking effect on the client.
+
+Setting: **Prohibit access to Control Panel and PC settings** - Enabled
+
+Path: 'User Configuration=> Policies -> Administrative Templates -> Control Panel -> Prohibit access to Control Panel and PC Settings'
+
+Placed under **User COnfiguration** because the Users OU contains user objects. The User Configuration half is what applies to them.
+
+**Tested on CLIENT01:**
+- Ran 'gpupdate /force' on the client to pull policy immediately
+- Logged in as a domain user; attempting to open Control Panel returned "This operation has been cancelled due to restrictions in effect on this computer", confirming the OU-scoped GPO reached and enforced on the client.
+
+![Control Panel blocked](screenshots/p6-02-control-panel-blocked.png)
+
+---
+
+## Troubleshooting Note: gpupdate Failed: No DC Connectivity
+
+'gpupdate /force' on CLIENT01 failed: "The processing of Group Policy failed because of lack of network connectivity to a domain controller."
+
+**Cause:** DC01 had been shut down, then restarted, but Group Policy is served by the domain controller, and a DC needs several minutes after boot for its services (AD DS, DNS, Netlogon) to become ready. The login screen appears well before the DC can actually serve clients. The client's policy refresh ran during that window and found no available DC.
+
+**Resolution:** Waited for DC01 to fully boot and settle, then re-ran 'gpupdate /force'. Succeeded.
+
+**Lesson:** The domain controller must be fully booted and its services settled before clients can authenticate, join, or pull Group Policy. Same root cause as the Phase 4 domain-join failure. Lab workflow: boot DC01 first, give it a few minutes, then work with clients.
+
+---
+
+$$ GPO Management Discipline
+A GPO's name and link should honestly reflect what it does. The initial OU-linked password GPO was repurposed (renamed and given a working OU-level setting) rather than left in place as a misleading, non-functional object. Every GPO in the console should have a clear, real purpose.
