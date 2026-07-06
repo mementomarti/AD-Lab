@@ -322,3 +322,50 @@ executed cleanly and created all three users.
 **Lesson:** the backtick tells PowerShell a command continues on the next
 line. When it goes missing, multi-line commands break apart. Writing a command
 on one line sidesteps the issue entirely.
+
+## Security Groups & Membership
+
+Created three global security groups and assigned users, implementing the access-control half of the directory.
+
+### Group Creation
+Created three global security groups inside the 'Groups' OU, one per department: 'IT', 'Sales', 'Marketing'.
+
+**Group scope and type decisions:**
+- **Type: Security** : security groups can be granted permissions to resources. (Distribution groups are email-list only and cannot control access.)
+- **Scope: Global** : global groups collect users by role/department within a single domain. The standard choice for department-based grouping in  a single-domain environment.
+
+*(Best-practice reference: the AGDLP model: Accounts into Global groups, Global into Domain Local, Domain Local granted Permissions. For a single-domain lab, global security groups are the correct simplified choice.)*
+
+### Adding Members
+Added each user to their department group, using both methods:
+
+**GUI:** right-click user -> Add to a group -> type group name -> OK (verified from the group's Members tab).
+
+**PowerShell:**
+
+    Add-ADGroupMember -Identity "IT" -Members "rblack"
+    Add-ADGroupMember -Identity "Marketing" -Members "dfrost"
+
+Verfiied membership from the group side:
+
+    GetADGroupMember -Identity "IT" -> Robert Black
+
+---
+
+## The Access Model: How Permissions Actually Work
+
+The central concept of this phase: for a user to access a resource, a full chain must be true. Group membership alone is **not** sufficient:
+
+1. The user account is **enabled** (a disabled account cannot log in).
+2. The user **authenticates** against the domain (validated by the DC).
+3. The user is a **member of a group**.
+4. **That group has been granted permission on the specific resource.**
+5. -> The user can access the resource.
+
+**Key distincions locked in this phase:**
+- **OU placement =! permissions.** An OU determins *where* an object lives in the tree and is the target for Group Policy. It grants no access.
+- **A group is not access.** A group with no permissions assigned anywhereis just a list of names. Membership lets a user *inherit* access; it is not access by itself.
+- **The Department attribute is metadata, not a permission.** It's an informational label, it does not place a user in a group or grant anything.
+Group membership must be assigned explicitly.
+
+**Access = membership in a group that has been granted permission on the resource.** Both halves are required; neither works alone.
