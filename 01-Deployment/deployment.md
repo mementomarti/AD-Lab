@@ -170,3 +170,155 @@ After completing DHCP, Local Server and All Servers showed red alerts.
     Get-Service | Where-Object {$_.StartType -eq 'Automatic' and $_.Status -ne 'Running'}
 
 **Resolution:** Hid the stale Kernel-Power event alerts and started InventorySvc to clear its flag. Dashboard returned to green. Both alerts were confirmed benign before clearing.
+
+# Phase 4: Client Deployment & Domain Join
+
+Deployed a Windows 11 Pro client, confirmed automatic IP assignment from the domain controller's DHCP scope, and joined it to the 'lab.local' domain so it authenticates against Active Directory.
+
+## Client VM
+- **OS:** Windows 11 Pro
+- **VM Specs"** 4 GB RAM, 2 vCPU, 60 GB disk
+- **Network:** VirtualBox Internal Network ('LAB-NET') - same isolated network as DC01
+- **Firmware:** TPM 2.0 and Secure Boot enabled for Win11 requirements
+
+## Installation notes
+- Bypassed the Windows 11 hardware check (TPM/Secure Boot/RAM) during setup via the 'LabConfig' registry keys, required to install in the VM environment.
+- Bypassed the OOBE Microsoft-account requirement using 'OOBE\BYPASSNRO', then selected "I dont have internet" to create a local account, appropriate for a domain client on an isolated network with no internet access.
+
+![Win11 hardware bypass](screensh0ts/p4-01-bypass.png)
+
+## DHCP verification
+With DC01 running, confirmed the client received its full IP configuration automatically from the DHCP scope built in Phase 3:
+
+| Setting | Value |
+|---|---|
+| IPv4 address | '192.168.10.x' (from scope range .100-.200) |
+| Subnet mask | '255.255.255.0' |
+| DHCP Server | '192.168.10.10' |
+| DNS Server | '192.168.10.10' |
+
+This validated Phases 1-3 end to end: the client pulled an address from the scope, with DC01 correctly assigned as its DNS server.
+
+![Client ipconfig](screenshots/p4-02-client-ipconfig.png)
+
+## Domain join
+Joined CLIENT01 to 'lab.local' via System Properties -> Change. Authenticated with the domain Administrator account. After reboot, logged in as a domain user and confirmed memebrship:
+
+    systeminfo | findstr /B "Domain" -> Domain: lab.local
+
+![Domain join confirmed](screenshots/p4-03-domain-confirmed.png)
+
+---
+
+## Troubleshooting Note: Client could not resolve or join the domain
+
+After deployment, the client could ping the DC by IP but could not resolve 'dc01.lab.local', and the domain join failed with "the specified domain either does not exist or could not be contacted."
+
+**Diagnosis (worked through in layers):**
+1. 'ping 192.168.10.10' succeeded but 'ping dc01.lab.local' failed -> network path was fine. The problem was DNS name resolution.
+2. Client's DNS server was correctly set to '192.168.10.10', so it was asking the right server.
+3. 'nslookup dc01.lab.local 192.168.10.10' returned "non-existent domain" -> DC01's DNS service was answering, but had no host record for itself.
+4. On DC01: the 'lab.local' zone existed, was AD-integrated ('IsDsIntegrated: True'), and accepted secure dynamic-updates, but DC01's own A record was missing. The DC has not self-registered.
+5. After fixing the A record, the domain join still failed because the required SRV service records ('_ldap._tcp.dc._msdcs.lab.local') were also missing. These are what a client uses to locate the domain controller.
+
+**Resolution:**
+- Manually created the missing A record:
+
+    Add-DnsServerResourceRecordA -ZoneName "lab.local" -Name "dc01" -IPv4Address "192.168.10.10"
+
+- Restarted Netlogon to force full registration of the DC's SRV records:
+
+    Restart-Service Netlogon
+
+- Verified the SRV record resolved:
+
+    nslookup -type=SRV _ldap._tcp.dc._msdcs.lab.local 127.0.0.1 -> dc-01.lab.local
+
+- Flushed the client's DNS cache ('ipconfig /flushDNS') to clear the cached negative results, then retried the join which completed successfully.
+
+**Lesson:** A domain join depends on DNS, specifically the DC's SRV records, not just basic connectivity. A reachable IP and even a working A record aren't enough. THe client locates the domain controller through SRV records regustered by Netlogon. When a DC failes to self-register, 'ipconfig /regusterdns' plus a Netlogon restart forces it.
+
+---
+
+## Note: Domain Controller Availabiltiy
+During the join, DC01 pwoered off unexpectedly, producing a "domain could not be contacted" error mid-handshake. The domain controller must remain running whenever clients are authenticating, as it provides DNS, DHCP, and authentication for the entire domain. Lab workflow: always boot DC01 first and keep it running before working with clients.
+
+# Phase 5: Directory Administration: OUs, Users & Groups
+
+Built out the Active Directory structure: an organizational unit hierarchy, user accounts created both manually and in bulk via PowerShell, demonstrating scalable provisioning.
+
+## OU Structure
+Created a parent OU 'LAB' with three child OUs, separating objects by type:
+
+    Lab
+    |- Users
+    |- Groups
+    |- Computers
+
+OUs are containers used to organize directory objects and to target Group Policy (Phase 6). "Protect from accidental deletion" is left enabled on OUs forcing deletion to be a deliberate, multi-stop action, preventing a single misclick from wiping out a contrainer full of live accounts.
+
+## Manual User Creation
+Created a first user ('John Smith' / 'jsmith') through Activer Directory Users and Computers to establish the required fields, then a second ('Jane Doe' / 'jdoe') via PowerShell:
+
+    New-ADUser -Name "Jane Doe" -SamAccountName "jdoe" '
+        -UserPrincipalName "jdoe@lab.local" '
+        =Path "OU-Users,OU=LAB,DC=lab,DC=local" '
+        -AccountPassword (ConvertTo-SecureString "LabPassword2026!" -AsPlainText -Force) '
+        -Enabled $true
+
+**Key Concepts:**
+- 'NewADUser' creates accounts **disabled by default** : a fail-safe so no half-configured account is ever live before a password is set. Must explicitly pass '-Enabled $true'.
+= The '-Path' value is a **Distringuished Name (DN)**, read most-specific to least-specific: 'OU=Users,OU=LAB,DC=lab,DC=local'. 'OU' = organizational unit; 'DC' = domain component ('lab.local' splits into 'DC=lab,DC=local').
+- **OU placement =! permissions.** Path only determins *where* the object lives in the tree. Access comes from **group membership**, a seperate step.
+
+## Bulk User Creation (CSV + Powershell)
+The real value of scripting: provisioning many users at once. Data lives in a CSV; logic lives in the script.
+
+**'C:\Lab\users.csv' :**
+
+    FirstName,LastName,SamAccountName,Department
+    Robert,Black,rblack,IT
+    Carol,Jones,cjones,Sales
+    Devin,Frost,dfrost,Marketing
+
+**Script:**
+
+    Import-Csv C:\Lab\users.csv | ForEach-Object {
+        New-ADUser -Name "$($_.FirstName) $($_.LastName)" `
+            -SamAccountName $_.SamAccountName `
+            -UserPrincipalName "$($_.SamAccountName)@lab.local" `
+            -Path "OU=Users,OU=LAB,DC=lab,DC=local" `
+            -AccountPassword (ConvertTo-SecureString "LabPassword2026!" -AsPlainText -Force) `
+            -Enabled $true
+    }
+
+**How it works:**
+- `Import-Csv` reads the file; the pipe (`|`) hands each row to
+  `ForEach-Object`, which runs the code block **once per row**.
+- `$_` is the current row; `$_.FirstName` pulls that row's FirstName value.
+  Each loop pass, the same code operates on a different row's data.
+- Per-person data (names, logon names) lives in the **CSV**; shared values
+  (`-Path`, `-Enabled`, password) are set **once in the script**, separating
+  data from logic avoids redundancy and gives a single source of truth.
+
+**Why this matters:** the script is identical whether the CSV has 3 users or
+300. Write the logic once, scale the data infinitely, provisioning effort
+stays flat regardless of headcount.
+
+---
+
+## Troubleshooting Note: PowerShell Line Continuation
+
+The bulk script initially failed with "the name provided is not a properly
+formed account name" and "SamAccountName is not recognized as a cmdlet."
+
+**Cause:** the backtick (`` ` ``) line-continuation characters were lost when
+pasting the multi-line command. Without them, PowerShell read each line as a
+separate command instead of one continuous `New-ADUser` call.
+
+**Resolution:** ran the command as a single line (no backticks needed), which
+executed cleanly and created all three users.
+
+**Lesson:** the backtick tells PowerShell a command continues on the next
+line. When it goes missing, multi-line commands break apart. Writing a command
+on one line sidesteps the issue entirely.
