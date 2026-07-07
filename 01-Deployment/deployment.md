@@ -19,7 +19,7 @@ Renamed the server and assigned a static IP before promoting it to a domain cont
 | IP address | `192.168.10.10` |
 | Subnet mask | `255.255.255.0` (/24) |
 | Default gateway | none (isolated lab network) |
-| Preferred DNS | `127.0.0.1` (loopback — server is its own DNS) |
+| Preferred DNS | `127.0.0.1` (loopback - server is its own DNS) |
 
 **Why a static IP:** A domain controller must have a fixed address. Clients
 locate the DC by its IP, and Active Directory + DNS break if that address
@@ -348,7 +348,7 @@ Added each user to their department group, using both methods:
 
 Verfiied membership from the group side:
 
-    GetADGroupMember -Identity "IT" -> Robert Black
+    Get-ADGroupMember -Identity "IT" -> Robert Black
 
 ---
 
@@ -433,5 +433,133 @@ Placed under **User COnfiguration** because the Users OU contains user objects. 
 
 ---
 
-$$ GPO Management Discipline
+## GPO Management Discipline
 A GPO's name and link should honestly reflect what it does. The initial OU-linked password GPO was repurposed (renamed and given a working OU-level setting) rather than left in place as a misleading, non-functional object. Every GPO in the console should have a clear, real purpose.
+
+# Phase 7: Break/Fix Troubleshooting Scenarios
+
+Deliberately created common help desk problems, then diagnosed and resolved
+each using the **diagnose → fix → verify** loop that defines real support work.
+
+## Triage Foundation: "I Can't Log In"
+
+The three most common login failures look identical to the user but have
+different causes and fixes. A single query distinguishes them:
+
+    Get-ADUser <user> -Properties Enabled | Select-Object Name, Enabled, LockedOut
+
+| Enabled | LockedOut | Diagnosis | Fix |
+|---|---|---|---|
+| True | True | Account locked out | `Unlock-ADAccount` |
+| False | - | Account disabled | `Enable-ADAccount` |
+| True | False | Wrong password | `Set-ADAccountPassword -Reset` |
+
+---
+
+## Scenario 1: Account Lockout
+
+**Setup:** Configured an account lockout policy (Default Domain Policy →
+Account Policies → Account Lockout Policy): threshold 5 attempts, 30-minute
+duration. Like password policy, lockout policy only enforces from the domain
+level, as it governs domain-wide account credentials.
+
+**Break:** Failed jdoe's login repeatedly on CLIENT01 until AD locked the
+account automatically.
+
+**Diagnose:**
+
+    Get-ADUser jdoe -Properties LockedOut | Select-Object Name, LockedOut
+    -> LockedOut: True
+
+**Fix:**
+
+    Unlock-ADAccount -Identity jdoe
+
+**Verify:**
+
+    Search-ADAccount -LockedOut     # jdoe no longer listed
+
+**Concept: lockout vs. disable:** A lockout is **automatic** (the system
+reacting to failed logins) and **self-healing** (clears after the duration).
+It's a defensive reaction, not an admin decision.
+
+**Advanced: repeated lockouts:** If a user locks out repeatedly on a schedule
+(e.g. every morning) despite knowing their password, the cause is usually a
+**stale cached credential** on a device, a phone with an old email/WiFi
+password, a mapped drive, or a scheduled task auto-retrying the old password.
+The fix isn't to keep unlocking (treats the symptom); it's to trace the source
+of the failed attempts via the DC's Security event log (Event ID 4740/4771)
+and update the saved credential on the offending device.
+
+---
+
+## Scenario 2 : Disabled Account
+
+**Break:**
+
+    Disable-ADAccount -Identity jdoe
+
+**Diagnose:**
+
+    Get-ADUser jdoe -Properties Enabled | Select-Object Name, Enabled, LockedOut
+    -> Enabled: False
+
+Note: AD has no "Disabled" property, it stores `Enabled` (True/False).
+A disabled account shows `Enabled: False`.
+
+**Fix:**
+
+    Enable-ADAccount -Identity jdoe
+
+**Verify:**
+
+    Get-ADUser jdoe -Properties Enabled | Select-Object Name, Enabled
+    -> Enabled: True
+
+**Concept: disable vs. lockout:** A disable is **manual** (an admin decision;
+leave, offboarding, security hold) and **permanent until reversed**. It never
+clears on its own. This is the opposite of a lockout's automatic/self-healing
+behavior.
+
+---
+
+## Scenario 3: Lost Resource Access (Group Membership)
+
+**Symptom:** User can log in fine but gets "access denied" on a specific
+resource. A different failure class from Scenarios 1 & 2 (authentication
+works; authorization to one resource doesn't).
+
+**Break:**
+
+    Remove-ADGroupMember -Identity "Sales" -Members "cjones"
+
+**Diagnose:** Access to a resource comes from group membership. Check the
+user's groups against what the resource requires:
+
+    Get-ADPrincipalGroupMembership cjones | Select-Object Name
+    -> Domain Users   (Sales absent. The required group is missing)
+
+**Fix:**
+
+    Add-ADGroupMember -Identity "Sales" -Members "cjones"
+
+**Verify:**
+
+    Get-ADGroupMember -Identity "Sales"     # Carol Jones now listed
+
+**Concept: Access tokens and re-login:** Even after correctly re-adding the
+user, they may still get "access denied" for a while. Group membership is read
+**at login** and baked into the user's **access token**, a snapshot taken at
+sign-in that does not update live. The current session carries the old token
+without Sales. The user must **log out and back in** to generate a fresh token
+that includes the group. "Log out and back in" here isn't a brush. It's
+the actual technical requirement for the new membership to take effect.
+
+---
+
+## The Core Pattern
+Every scenario followed the same loop: **reproduce the symptom → diagnose the
+root cause → apply the correct fix → verify the fix.** Correctly *diagnosing*
+which problem it is (lockout vs. disabled vs. wrong password vs. missing group)
+matters more than the fix itself. The wrong fix wastes time and doesn't
+resolve the ticket. This diagnostic discipline is the core of help desk work.
